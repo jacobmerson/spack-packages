@@ -27,6 +27,9 @@ class Mfem(Package, CMakePackage, CudaPackage, ROCmPackage):
     test_requires_compiler = True
 
     build_system("generic", "cmake", default="generic")
+    # The CMake build is supported in spack starting with mfem v4.9.0
+    # See comment from v-dobrev https://github.com/spack/spack-packages/pull/143
+    conflicts("build_system=cmake", when="@:4.8")
 
     # Recommended mfem builds to test when updating this file: see the shell
     # script 'test_builds.sh' in the same directory as this file.
@@ -631,8 +634,14 @@ class Mfem(Package, CMakePackage, CudaPackage, ROCmPackage):
     @property
     def libs(self):
         """Export the mfem library file."""
+        # With the MSVC-compatible ABI, the CMake build installs 'mfem.lib'
+        name = "mfem" if self.spec.satisfies("platform=windows build_system=cmake") else "libmfem"
         libs = find_libraries(
-            "libmfem", root=self.prefix.lib, shared=("+shared" in self.spec), recursive=False
+            name,
+            root=self.prefix.lib,
+            shared=("+shared" in self.spec),
+            recursive=False,
+            runtime=False,
         )
         return libs or None
 
@@ -667,6 +676,26 @@ class Mfem(Package, CMakePackage, CudaPackage, ROCmPackage):
         using_nvcc = "+cuda" in self.spec and "+enzyme" not in self.spec
         return "-Wl," if not using_nvcc else "-Xlinker="
 
+    examples_src_dir = "examples"
+    examples_data_dir = "data"
+
+    def test_ex10(self):
+        """build and run ex10(p)"""
+        # MFEM has many examples to serve as a suitable smoke check. ex10
+        # was chosen arbitrarily among the examples that work both with
+        # MPI and without it
+        test_dir = join_path(self.test_suite.current_test_cache_dir, self.examples_src_dir)
+
+        mesh = join_path("..", self.examples_data_dir, "beam-quad.mesh")
+        test_exe = "ex10p" if ("+mpi" in self.spec) else "ex10"
+
+        with working_dir(test_dir):
+            make = which("make", required=True)
+            make(f"CONFIG_MK={self.config_mk}", test_exe, parallel=False)
+
+            ex10 = which(test_exe, required=True)
+            ex10("--mesh", mesh)
+
 
 def str_to_timerid(timer_type):
     timer_ids = {"auto": "-1", "std": "0", "posix": "2", "mac": "4", "mpi": "6"}
@@ -681,7 +710,7 @@ class AnyBuilder(BaseBuilder):
         # Clean the 'examples' directory -- at least one example is always built
         # and we do not want to cache executables.
         make("examples/clean", parallel=False)
-        extra_install_tests = [self.examples_src_dir, self.examples_data_dir]
+        extra_install_tests = [self.pkg.examples_src_dir, self.pkg.examples_data_dir]
         cache_extra_test_sources(self.pkg, extra_install_tests)
 
 
@@ -1455,43 +1484,6 @@ class GenericBuilder(AnyBuilder, GenericBuilder):
         if install_em:
             install_tree("data", join_path(prefix_share, "data"))
 
-    examples_src_dir = "examples"
-    examples_data_dir = "data"
-
-    def test_ex10(self):
-        """build and run ex10(p)"""
-        # MFEM has many examples to serve as a suitable smoke check. ex10
-        # was chosen arbitrarily among the examples that work both with
-        # MPI and without it
-        test_dir = join_path(self.test_suite.current_test_cache_dir, self.pkg.examples_src_dir)
-
-        mesh = join_path("..", self.pkg.examples_data_dir, "beam-quad.mesh")
-        test_exe = "ex10p" if ("+mpi" in self.spec) else "ex10"
-
-        with working_dir(test_dir):
-            make = which("make", required=True)
-            make(f"CONFIG_MK={self.config_mk}", test_exe, parallel=False)
-
-            ex10 = which(test_exe, required=True)
-            ex10("--mesh", mesh)
-
-    # this patch is only needed for mfem 4.1, where a few
-    # released files include byte order marks
-    @when("@4.1.0")
-    def patch(self):
-        # Remove the byte order mark since it messes with some compilers
-        files_with_bom = [
-            "fem/gslib.hpp",
-            "fem/gslib.cpp",
-            "linalg/hiop.hpp",
-            "miniapps/gslib/field-diff.cpp",
-            "miniapps/gslib/findpts.cpp",
-            "miniapps/gslib/pfindpts.cpp",
-        ]
-        bom = "\ufeff"
-        for f in files_with_bom:
-            filter_file(bom, "", f)
-
     # See also find_system_libraries in lib/spack/llnl/util/filesystem.py
     # where the similar list of paths is used.
     sys_lib_paths = [
@@ -1542,6 +1534,13 @@ class GenericBuilder(AnyBuilder, GenericBuilder):
 
 
 class CMakeBuilder(CMakeBuilder):
+    @run_after("install")
+    def cache_test_sources(self):
+        """Copy the example source files after the package is installed to an
+        install test subdirectory for use during `spack test run`."""
+        extra_install_tests = [self.pkg.examples_src_dir, self.pkg.examples_data_dir]
+        cache_extra_test_sources(self.pkg, extra_install_tests)
+
     def cmake_args(self):
         args = [
             self.define_from_variant("MFEM_USE_MPI", "mpi"),
@@ -1572,6 +1571,9 @@ class CMakeBuilder(CMakeBuilder):
             self.define_from_variant("MFEM_USE_FMS", "fms"),
             self.define_from_variant("MFEM_USE_GINKGO", "ginkgo"),
             self.define_from_variant("MFEM_USE_HIOP", "hiop"),
+            self.define_from_variant("MFEM_USE_CUDA", "cuda"),
+            self.define_from_variant("MFEM_USE_HIP", "rocm"),
+            self.define_from_variant("MFEM_USE_ENZYME", "enzyme"),
             self.define_from_variant("MFEM_ENABLE_EXAMPLES", "examples"),
             self.define_from_variant("MFEM_ENABLE_MINIAPPS", "miniapps"),
             self.define_from_variant("MFEM_USE_EXCEPTIONS", "exceptions"),
@@ -1582,6 +1584,12 @@ class CMakeBuilder(CMakeBuilder):
             args.append(self.define("BUILD_SHARED_LIBS", True))
         else:
             args.append(self.define("BUILD_SHARED_LIBS", False))
+
+        # CMakeBuilder.std_args() does not forward cuda_arch or amdgpu_target
+        if "+cuda" in self.spec:
+            args.append(self.define_cuda_architectures(self.pkg))
+        if "+rocm" in self.spec:
+            args.append(self.define_hip_architectures(self.pkg))
 
         cxxstd = self.spec.variants["cxxstd"].value
         if cxxstd != "auto":
