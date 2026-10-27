@@ -32,9 +32,17 @@ class Hypre(CMakePackage, AutotoolsPackage, CudaPackage, ROCmPackage):
 
     # Support both CMake and Autotools. CMake is available and default only for v3+.
     build_system(conditional("cmake", when="@3:"), "autotools", default="cmake")
+    # CMake support exists only for @3:.
+    requires("build_system=cmake", when="platform=windows")
+    conflicts(
+        "platform=windows",
+        when="@:2",
+        msg="Hypre versions before 3.0 use Autotools only and cannot be built on Windows",
+    )
 
     # Package versions
     version("develop", branch="master")
+    version("3.2.0", sha256="5273205a310fb6aa3ae506ce216760fb67b30e02024874f3cdb8b811e4801de7")
     version("3.1.0", sha256="a6879ae9375d95c26afd97141d61e7a8092807333bf40cd180b385aed7351b2d")
     version("3.0.0", sha256="d9dbfa34ebd07af1641f04b06338c7808b1f378e2d7d5d547514db9f11dffc26")
     version("2.33.0", sha256="0f9103c34bce7a5dcbdb79a502720fc8aab4db9fd0146e0791cde7ec878f27da")
@@ -197,6 +205,7 @@ class Hypre(CMakePackage, AutotoolsPackage, CudaPackage, ROCmPackage):
 
     # GPU-related dependencies and conflicts
     gpu_pkgs = ["magma", "umpire", "superlu-dist"]
+    conflicts("+umpire", when="~cuda~rocm")
     conflicts("+unified-memory", when="~cuda~rocm~sycl")
     conflicts("+gpu-profiling", when="~cuda~rocm~sycl")
     conflicts("+gpu-aware-mpi", when="~cuda~rocm~sycl")
@@ -394,6 +403,10 @@ class CMakeBuilder(CMakeBuilder):
         if spec.satisfies("+magma"):
             args.append(self.define("TPL_MAGMA_INCLUDE_DIRS", self.spec["magma"].prefix.include))
             args.append(self.define("TPL_MAGMA_LIBRARIES", self.spec["magma"].libs))
+
+        if "+umpire" in self.spec:
+            args.append(self.define("TPL_UMPIRE_INCLUDE_DIRS", self.spec["umpire"].prefix.include))
+            args.append(self.define("TPL_UMPIRE_LIBRARIES", self.spec["umpire"].libs))
 
         # GPU architectures
         cuda_arch_vals = spec.variants.get("cuda_arch", None)

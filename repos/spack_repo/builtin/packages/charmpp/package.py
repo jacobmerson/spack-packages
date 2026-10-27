@@ -24,9 +24,18 @@ class Charmpp(Package):
     git = "https://github.com/UIUC-PPL/charm.git"
 
     maintainers("matthiasdiener")
+    # relicensed from a non-commercial license to Apache-2.0 in May 2024, after v7.0.0
+    license("LicenseRef-Charmpp-Non-Commercial", when="@:7.0", checked_by="tgamblin")
+    license("Apache-2.0 WITH LLVM-exception", when="@7.1:", checked_by="tgamblin")
+    redistribute(source=False, binary=False, when="@:7.0")
 
     version("main", branch="main")
 
+    version(
+        "8.1.0",
+        sha256="cc078d3c2fbffcdae04dad00b6c3fc71dce27fb359edb39739c720b8867e6f7e",
+        url="https://github.com/charmplusplus/charm/archive/refs/tags/v8.1.0.tar.gz",
+    )
     version(
         "8.0.0",
         sha256="e30fc1e921e5cbf3406e792d5b0ca5f211c5d8ffbfc56e56d5501d8118abcaf6",

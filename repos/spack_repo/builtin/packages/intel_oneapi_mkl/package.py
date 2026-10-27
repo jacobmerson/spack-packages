@@ -23,10 +23,17 @@ class IntelOneapiMkl(IntelOneApiLibraryPackage):
     math.
     """
 
-    maintainers("rscohn2")
+    maintainers("lukaszstolarczuk", "rbanka1", "rscohn2")
 
     homepage = (
         "https://software.intel.com/content/www/us/en/develop/tools/oneapi/components/onemkl.html"
+    )
+
+    version(
+        "2026.1.0",
+        url="https://registrationcenter-download.intel.com/akdlm/IRC_NAS/17f37e16-768e-40d2-bcf8-c252dc6c5499/intel-onemkl-2026.1.0.237_offline.sh",
+        sha256="854deea4c4eec21d23cfb895b0c76ac02b5a76e3a9581a39b4c69fb7ffc69146",
+        expand=False,
     )
 
     version(
