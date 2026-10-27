@@ -759,6 +759,23 @@ class Mfem(Package, CMakePackage, CudaPackage, ROCmPackage):
             ex10 = which(test_exe, required=True)
             ex10("--mesh", mesh)
 
+    # this patch is only needed for mfem 4.1, where a few
+    # released files include byte order marks
+    @when("@4.1.0")
+    def patch(self):
+        # Remove the byte order mark since it messes with some compilers
+        files_with_bom = [
+            "fem/gslib.hpp",
+            "fem/gslib.cpp",
+            "linalg/hiop.hpp",
+            "miniapps/gslib/field-diff.cpp",
+            "miniapps/gslib/findpts.cpp",
+            "miniapps/gslib/pfindpts.cpp",
+        ]
+        bom = "\ufeff"
+        for f in files_with_bom:
+            filter_file(bom, "", f)
+
 
 def str_to_timerid(timer_type):
     timer_ids = {"auto": "-1", "std": "0", "posix": "2", "mac": "4", "mpi": "6"}
