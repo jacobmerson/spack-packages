@@ -739,6 +739,30 @@ class Mfem(Package, CMakePackage, CudaPackage, ROCmPackage):
         using_nvcc = "+cuda" in self.spec and "+enzyme" not in self.spec
         return "-Wl," if not using_nvcc else "-Xlinker="
 
+    def extra_fortran_lib(self, spec):
+        ef_libs = LibraryList([])
+        if "+shared" in spec:
+            return ef_libs
+        if "+mpi" in spec:
+            mpi = spec["mpi"]
+            mpi_lib_name = None
+            if ("^mpich" in spec) or ("^mvapich2" in spec):
+                mpi_lib_name = "libmpifort"
+            elif "^openmpi" in spec:
+                mpi_lib_name = "libmpi_mpifh"
+            elif "^spectrum-mpi" in spec:
+                mpi_lib_name = "libmpi_ibm_mpifh"
+            if mpi_lib_name:
+                ef_libs += find_libraries(mpi_lib_name, root=mpi.prefix, recursive=True)
+        if os.path.basename(env["FC"]) == "gfortran":
+            gfortran = Executable(env["FC"])
+            libext = "dylib" if sys.platform == "darwin" else "so"
+            libfile = os.path.abspath(
+                gfortran("-print-file-name=libgfortran.%s" % libext, output=str).strip()
+            )
+            ef_libs += LibraryList(libfile)
+        return ef_libs
+
     examples_src_dir = "examples"
     examples_data_dir = "data"
 
@@ -1055,7 +1079,7 @@ class GenericBuilder(AnyBuilder, GenericBuilder):
             sp_lib = [ld_flags_from_library_list(strumpack.libs)]
             # Parts of STRUMPACK use fortran, so we need to link with the
             # fortran library and also the MPI fortran library:
-            extra_fortran_lib = self.extra_fortran_lib(strumpack)
+            extra_fortran_lib = self.pkg.extra_fortran_lib(strumpack)
             if extra_fortran_lib:
                 sp_lib += [ld_flags_from_library_list(extra_fortran_lib)]
             if "+openmp" in strumpack:
@@ -1508,7 +1532,7 @@ class GenericBuilder(AnyBuilder, GenericBuilder):
             if "^scalapack" in mumps:
                 scalapack = mumps["scalapack"]
                 mumps_lib += scalapack.libs
-            mumps_lib += self.extra_fortran_lib(mumps)
+            mumps_lib += self.pkg.extra_fortran_lib(mumps)
             options += [
                 "MUMPS_OPT=%s" % " ".join(mumps_opt),
                 "MUMPS_LIB=%s" % ld_flags_from_library_list(mumps_lib),
@@ -1618,30 +1642,6 @@ class GenericBuilder(AnyBuilder, GenericBuilder):
         flags += ["-l%s" % lib for lib in pkg_libs_list]
         return " ".join(flags)
 
-    def extra_fortran_lib(self, spec):
-        ef_libs = LibraryList([])
-        if "+shared" in spec:
-            return ef_libs
-        if "+mpi" in spec:
-            mpi = spec["mpi"]
-            mpi_lib_name = None
-            if ("^mpich" in spec) or ("^mvapich2" in spec):
-                mpi_lib_name = "libmpifort"
-            elif "^openmpi" in spec:
-                mpi_lib_name = "libmpi_mpifh"
-            elif "^spectrum-mpi" in spec:
-                mpi_lib_name = "libmpi_ibm_mpifh"
-            if mpi_lib_name:
-                ef_libs += find_libraries(mpi_lib_name, root=mpi.prefix, recursive=True)
-        if os.path.basename(env["FC"]) == "gfortran":
-            gfortran = Executable(env["FC"])
-            libext = "dylib" if sys.platform == "darwin" else "so"
-            libfile = os.path.abspath(
-                gfortran("-print-file-name=libgfortran.%s" % libext, output=str).strip()
-            )
-            ef_libs += LibraryList(libfile)
-        return ef_libs
-
     def all_headers(self, root_spec):
         all_hdrs = HeaderList([])
         for dep in root_spec.traverse(deptype="link"):
@@ -1716,6 +1716,12 @@ class CMakeBuilder(CMakeBuilder):
         if cxxstd:
             args.append(self.define("CMAKE_CXX_STANDARD", cxxstd))
 
+        # As in the generic build, use the BLAS/LAPACK from the spec instead of the
+        # libraries FindBLAS/FindLAPACK pick first
+        if "+lapack" in self.spec:
+            args.append(self.define("BLAS_LIBRARIES", self.spec["blas"].libs.joined(";")))
+            args.append(self.define("LAPACK_LIBRARIES", self.spec["lapack"].libs.joined(";")))
+
         timer = self.spec.variants["timer"].value
         if timer != "auto":
             args.append(self.define("MFEM_TIMER_TYPE", str_to_timerid(timer)))
@@ -1730,6 +1736,12 @@ class CMakeBuilder(CMakeBuilder):
         if "+strumpack" in self.spec:
             args.append(self.define("STRUMPACK_REQUIRED_PACKAGES", "MPI"))
 
+        # Static MUMPS and STRUMPACK need their dependencies on the link line
+        for name, prefix in (("mumps", "MUMPS"), ("strumpack", "STRUMPACK")):
+            if f"+{name}" in self.spec and "~shared" in self.spec[name]:
+                libs = self.static_link_libs(name)
+                args.append(self.define(f"{prefix}_REQUIRED_LIBRARIES", libs.libraries))
+
         if "+netcdf" in self.spec:
             args.append(self.define("NetCDF_REQUIRED_PACKAGES", ""))
 
@@ -1737,7 +1749,17 @@ class CMakeBuilder(CMakeBuilder):
             args.append(self.define("PUMI_DIR", self.spec["pumi"].prefix))
 
         if "+cudss" in self.spec:
-            args.append(self.define("CUDSS_DIR", self.spec["cudss"].prefix))
+            cudss = self.spec["cudss"]
+            args.append(self.define("CUDSS_DIR", cudss.prefix))
+            # As in the generic build, use the communication layer that cudss+mpi
+            # builds against the same MPI instead of NVIDIA's Open MPI binary.
+            if "+mpi" in self.spec:
+                comm_libs = find_libraries(
+                    "libcudss_commlayer_mpi", cudss.prefix.lib, shared=True, recursive=True
+                )
+                if not comm_libs:
+                    raise InstallError("Required cuDSS MPI communication layer not found")
+                args.append(self.define("MFEM_CUDSS_COMM_LIB", comm_libs[0]))
 
         if "+caliper" in self.spec:
             args.append(self.define("CALIPER_DIR", self.spec["caliper"].prefix))
@@ -1751,6 +1773,20 @@ class CMakeBuilder(CMakeBuilder):
             args.append(self.define("MPFR_FOUND", True))
 
         return args
+
+    def static_link_libs(self, name):
+        """Return the libraries of the link dependencies of the dependency name in link
+        order, including the Fortran runtime"""
+        # Traverse the dependency node itself: self.spec[name] is a build interface wrapper
+        (node,) = self.spec.dependencies(name)
+        libs = LibraryList([])
+        for dep in node.traverse(order="topo", deptype="link", root=False):
+            try:
+                libs += self.spec[dep.name].libs
+            except NoLibrariesError:
+                # Libraries not named after the package, e.g. ButterflyPACK's
+                libs += find_libraries("lib*", dep.prefix.lib, shared="~shared" not in dep)
+        return libs + self.pkg.extra_fortran_lib(self.spec[name])
 
     @run_after("build")
     def check_or_test(self) -> None:
